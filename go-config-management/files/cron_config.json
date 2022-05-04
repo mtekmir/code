@@ -1,0 +1,13 @@
+{
+  "inventory-cron": {
+    "schedule": "30 0 * * *",
+    "desc": "Cron to calculate inventory stats",
+    "disabled": false,
+    "notifyEmail": ["jdoe@gmail.com"]
+  },
+  "invoices-cron": {
+    "schedule": "10 0 * * *",
+    "desc": "Cron to generate invoices",
+    "disabled": false
+  }
+}
