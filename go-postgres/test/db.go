@@ -3,71 +3,79 @@ package test
 import (
 	"database/sql"
 	"os"
+	"strings"
 	"testing"
 
-	"code.com/config"
+	// Postgres driver
+	_ "github.com/jackc/pgx/v4/stdlib"
 )
 
-// SetupTX sets up a database transaction to be used in tests.
-// Once the tests are done it will rollback the transaction
-func SetupTX(t *testing.T) *sql.Tx {
+// SetupDB sets up a database connection to be used in tests.
+// It creates a new schema with the t.Name().
+// Once the test is complete, it will drop the created schema and close the db connection.
+func SetupDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	conf := config.Parse()
-
-	db, err := sql.Open("pgx", conf.DatabaseURL)
-	if err != nil {
-		t.Fatalf("Failed to initialize db. Err: %s", err.Error())
+	dbURL := "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+	u := os.Getenv("DATABASE_URL")
+	if u != "" {
+		dbURL = u
 	}
 
-	// create test schema
-	_, err = db.Exec("CREATE SCHEMA IF NOT EXISTS test")
+	db, err := sql.Open("pgx", dbURL)
 	if err != nil {
-		t.Fatalf("Error while creating the schema. Err: %s", err.Error())
+		t.Fatalf("db initialization failed. err: %v", err)
 	}
 
-	// use schema
-	_, err = db.Exec("SET search_path TO test")
-	if err != nil {
-		t.Fatalf("Error while switching to schema. Err: %s", err.Error())
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("Unable to begin tx. %v", err)
-	}
+	schemaName := strings.ToLower(t.Name())
 
 	t.Cleanup(func() {
-		tx.Rollback()
+		_, err := db.Exec("DROP SCHEMA " + schemaName + " CASCADE")
+		if err != nil {
+			t.Fatalf("db cleanup failed. err: %v", err)
+		}
 		db.Close()
 	})
 
-	return tx
+	// create test schema
+	_, err = db.Exec("CREATE SCHEMA " + schemaName)
+	if err != nil {
+		t.Fatalf("schema creation failed. err: %v", err)
+	}
+
+	// use schema
+	_, err = db.Exec("SET search_path TO " + schemaName)
+	if err != nil {
+		t.Fatalf("error while switching to schema. err: %v", err)
+	}
+
+	return db
 }
 
-type execer interface {
-	Exec(query string, args ...interface{}) (sql.Result, error)
-}
-
-func CreateProductTables(t *testing.T, db execer) {
+func CreateProductTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 	statements := []string{
-		`
-		create table if not exists variations(
+		`create table if not exists brands(
 			id bigserial unique primary key,
 			name varchar not null
-		);
-		`,
-		`
-		create table if not exists products(
+		);`,
+		`create table if not exists variations(
 			id bigserial unique primary key,
-			barcode varchar not null,
+			name varchar not null
+		);`,
+		`create table if not exists products(
+			id bigserial unique primary key,
+			created_at timestamptz default now(),
 			name varchar not null,
-			price numeric(10,2),
+			price int not null,
+			brand_id bigint references brands(id)
+		);`,
+		`create table if not exists product_variations(
+			id bigserial unique primary key,
 			quantity int not null,
-			variation_id bigint references variations(id)
-		);
-		`,
+			product_id bigint not null references products(id),
+			variation_id bigint not null references variations(id)
+		)`,
 	}
 
 	for _, stmt := range statements {
