@@ -863,5 +863,193 @@ func TestGetProductsFilteredSorted(t *testing.T) {
 			}
 		})
 	}
+}
 
+func TestGetProductsCursorPagination(t *testing.T) {
+	db := test.SetupDB(t)
+	test.CreateProductTables(t, db)
+
+	store := postgres.NewProductStore(db)
+
+	_, err := db.Exec(`
+		INSERT INTO brands(id, name) 
+		VALUES (1, 'Brand1'), (2, 'Brand2')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO products(created_at, name, price, brand_id)
+		VALUES
+			('2022-05-23 13:29:16', 'Shirt', 5000, 1),
+			('2022-05-24 13:29:16', 'Polo', 4000, 1),
+			('2022-05-25 13:29:16', 'T-Shirt', 3000, 1),
+			('2022-05-26 13:29:16', 'Pants', 8000, NULL),
+			('2022-05-27 13:29:16', 'Socks', 1000, NULL),
+			('2022-05-28 13:29:16', 'Shoes', 2000, 2),
+			('2022-05-29 13:29:16', 'Hat', 500, 2),
+			('2022-05-30 13:29:16', 'Glasses', 2500, 2)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO variations(id, name)
+		VALUES (1, 'L'), (2, 'M'), (3, 'S')
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.Exec(`
+		INSERT INTO product_variations(product_id, variation_id, quantity)
+		VALUES (1, 1, 1), (2, 2, 2), (2, 3, 3)
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	brand1 := &product.Brand{ID: 1, Name: "Brand1"}
+	brand2 := &product.Brand{ID: 2, Name: "Brand2"}
+
+	testCases := []struct {
+		desc             string
+		cursors          postgres.Cursors
+		limit            int
+		expectedProducts []product.Product
+		expectedCursors  postgres.Cursors
+	}{
+		{
+			desc:  "first page limit 5",
+			limit: 5,
+			expectedProducts: []product.Product{
+				{Name: "Glasses", Price: 2500, Brand: brand2},
+				{Name: "Hat", Price: 500, Brand: brand2},
+				{Name: "Shoes", Price: 2000, Brand: brand2},
+				{Name: "Socks", Price: 1000},
+				{Name: "Pants", Price: 8000},
+			},
+			expectedCursors: postgres.Cursors{
+				Next: "2022-05-26T13:29:16Z",
+			},
+		},
+		{
+			desc:  "Next page limit 3",
+			limit: 3,
+			cursors: postgres.Cursors{
+				Next: "2022-05-28T13:29:16Z",
+			},
+			expectedProducts: []product.Product{
+				{Name: "Socks", Price: 1000},
+				{Name: "Pants", Price: 8000},
+				{Name: "T-Shirt", Price: 3000, Brand: brand1},
+			},
+			expectedCursors: postgres.Cursors{
+				Prev: "2022-05-27T13:29:16Z",
+				Next: "2022-05-25T13:29:16Z",
+			},
+		},
+		{
+			desc:  "going forward last page limit 3",
+			limit: 3,
+			cursors: postgres.Cursors{
+				Next: "2022-05-26T13:29:16Z",
+			},
+			expectedProducts: []product.Product{
+				{Name: "T-Shirt", Price: 3000, Brand: brand1},
+				{
+					Name: "Polo", Price: 4000, Brand: brand1,
+					Variations: []product.Variation{
+						{ID: 2, Name: "M", Quantity: 2},
+						{ID: 3, Name: "S", Quantity: 3},
+					},
+				},
+				{
+					Name: "Shirt", Price: 5000, Brand: brand1,
+					Variations: []product.Variation{
+						{ID: 1, Name: "L", Quantity: 1},
+					},
+				},
+			},
+			expectedCursors: postgres.Cursors{
+				Prev: "2022-05-25T13:29:16Z",
+			},
+		},
+		{
+			desc:  "Go back first page limit 3",
+			limit: 3,
+			cursors: postgres.Cursors{
+				Prev: "2022-05-22T13:29:16Z",
+			},
+			expectedProducts: []product.Product{
+				{Name: "T-Shirt", Price: 3000, Brand: brand1},
+				{
+					Name: "Polo", Price: 4000, Brand: brand1,
+					Variations: []product.Variation{
+						{ID: 2, Name: "M", Quantity: 2},
+						{ID: 3, Name: "S", Quantity: 3},
+					},
+				},
+				{
+					Name: "Shirt", Price: 5000, Brand: brand1,
+					Variations: []product.Variation{
+						{ID: 1, Name: "L", Quantity: 1},
+					},
+				},
+			},
+			expectedCursors: postgres.Cursors{
+				Prev: "2022-05-25T13:29:16Z",
+			},
+		},
+		{
+			desc:  "Go back limit 3",
+			limit: 3,
+			cursors: postgres.Cursors{
+				Prev: "2022-05-24T13:29:16Z",
+			},
+			expectedProducts: []product.Product{
+				{Name: "Socks", Price: 1000},
+				{Name: "Pants", Price: 8000},
+				{Name: "T-Shirt", Price: 3000, Brand: brand1},
+			},
+			expectedCursors: postgres.Cursors{
+				Next: "2022-05-25T13:29:16Z",
+				Prev: "2022-05-27T13:29:16Z",
+			},
+		},
+		{
+			desc:  "Go back last page limit 3",
+			limit: 3,
+			cursors: postgres.Cursors{
+				Prev: "2022-05-27T13:29:16Z",
+			},
+			expectedProducts: []product.Product{
+				{Name: "Glasses", Price: 2500, Brand: brand2},
+				{Name: "Hat", Price: 500, Brand: brand2},
+				{Name: "Shoes", Price: 2000, Brand: brand2},
+			},
+			expectedCursors: postgres.Cursors{
+				Next: "2022-05-28T13:29:16Z",
+			},
+		},
+	}
+	for _, tC := range testCases {
+		t.Run(tC.desc, func(t *testing.T) {
+			pp, nextCursors, err := store.GetProductsCursorPagination(context.TODO(), tC.cursors, tC.limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if diff := cmp.Diff(tC.expectedCursors, nextCursors); diff != "" {
+				t.Errorf("cursors are different (-want +got):\n%s", diff)
+			}
+
+			ignoreOpts := cmpopts.IgnoreFields(product.Product{}, "ID", "CreatedAt")
+			if diff := cmp.Diff(tC.expectedProducts, pp, ignoreOpts); diff != "" {
+				t.Errorf("products are different (-want +got):\n%s", diff)
+			}
+		})
+	}
 }

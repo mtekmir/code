@@ -26,7 +26,7 @@ type Product struct {
 	ID         ID
 	CreatedAt  time.Time
 	Name       string
-	Price      int // Price in cents
-	Brand      *Brand
-	Variations []Variation
+	Price      int         // Price in cents
+	Brand      *Brand      `json:",omitempty"`
+	Variations []Variation `json:",omitempty"`
 }

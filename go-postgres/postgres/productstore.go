@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"code.com/product"
 )
@@ -592,3 +593,174 @@ func (store ProductStore) GetProductsFilteredSorted(ctx context.Context, params 
 
 	return res, total, nil
 }
+
+type Cursors struct {
+	Prev string
+	Next string
+}
+
+func (store ProductStore) GetProductsCursorPagination(
+	ctx context.Context, cursors Cursors, limit int,
+) ([]product.Product, Cursors, error) {
+	if limit == 0 {
+		return []product.Product{}, Cursors{}, errors.New("limit cannot be zero")
+	}
+	if cursors.Next != "" && cursors.Prev != "" {
+		return []product.Product{}, Cursors{}, errors.New("two cursors cannot be provided at the same time")
+	}
+
+	values := make([]interface{}, 0, 4)
+	rowsLeftQuery := "SELECT COUNT(*) FROM products p"
+	pagination := ""
+
+	if cursors.Next != "" {
+		f := fmt.Sprintf("p.created_at < $%d", len(values)+1)
+		rowsLeftQuery += fmt.Sprintf(" WHERE %s", f)
+		pagination += fmt.Sprintf("WHERE %s ORDER BY created_at DESC LIMIT $%d", f, len(values)+2)
+		values = append(values, cursors.Next, limit)
+	}
+
+	if cursors.Prev != "" {
+		f := fmt.Sprintf("p.created_at > $%d", len(values)+1)
+		rowsLeftQuery += fmt.Sprintf(" WHERE %s", f)
+		pagination += fmt.Sprintf("WHERE %s ORDER BY created_at ASC LIMIT $%d", f, len(values)+2)
+		values = append(values, cursors.Prev, limit)
+	}
+
+	if cursors.Next == "" && cursors.Prev == "" {
+		pagination = fmt.Sprintf(" ORDER BY p.created_at DESC LIMIT $%d", len(values)+1)
+		values = append(values, limit)
+	}
+
+	stmt := fmt.Sprintf(`
+		SELECT p.id, created_at, p.name, price, v.id, v.name, pv.quantity, b.id, b.name,
+		(%s) AS rows_left,
+		(SELECT COUNT(*) FROM products) AS total
+		FROM (SELECT * FROM products p %s) p
+		LEFT JOIN product_variations pv ON p.id = pv.product_id
+		LEFT JOIN variations v ON pv.variation_id = v.id
+		LEFT JOIN brands b ON p.brand_id = b.id
+		ORDER BY created_at DESC
+	`, rowsLeftQuery, pagination)
+
+	rows, err := store.db.Query(stmt, values...)
+	if err != nil {
+		return nil, Cursors{}, fmt.Errorf("failed to get products. error: %v", err)
+	}
+	defer rows.Close()
+
+	var (
+		rowsLeft int
+		total    int
+		pp       = map[product.ID]*product.Product{}
+		order    = []product.ID{}
+	)
+
+	for rows.Next() {
+		var (
+			p             product.Product
+			variationID   sql.NullInt64
+			variationName sql.NullString
+			quantity      sql.NullInt64
+			brandID       sql.NullInt64
+			brandName     sql.NullString
+		)
+
+		err := rows.Scan(
+			&p.ID, &p.CreatedAt, &p.Name, &p.Price, &variationID,
+			&variationName, &quantity, &brandID, &brandName, &rowsLeft, &total,
+		)
+		if err != nil {
+			return []product.Product{}, Cursors{}, err
+		}
+
+		found, ok := pp[p.ID]
+		if ok { // Second result of the same product. It means it is a variation
+			v := product.Variation{
+				ID:       product.VariationID(variationID.Int64),
+				Name:     variationName.String,
+				Quantity: int(quantity.Int64),
+			}
+			found.Variations = append(found.Variations, v)
+			continue
+		}
+
+		// First time seeing the product. Brand can be null
+		if brandID.Valid {
+			p.Brand = &product.Brand{ID: product.BrandID(brandID.Int64), Name: brandName.String}
+		}
+
+		// If variation exists add it to the slice
+		if variationID.Valid {
+			v := product.Variation{
+				ID:       product.VariationID(variationID.Int64),
+				Name:     variationName.String,
+				Quantity: int(quantity.Int64),
+			}
+			p.Variations = append(p.Variations, v)
+		}
+		pp[p.ID] = &p
+		order = append(order, p.ID)
+	}
+
+	res := make([]product.Product, 0, len(order))
+	for _, id := range order {
+		res = append(res, *pp[id])
+	}
+
+	var (
+		prevCursor string // cursor we return when there is a prev page
+		nextCursor string // cursor we return when there is a next page
+	)
+
+	//  A     B     C			D			E
+	//  |-----|-----|-----|-----|
+
+	// When we provide a next cursor, direction = A->E
+	// When we provide a prev cursor, direction = E->A
+
+	switch {
+
+	// *If there are no results we don't have to compute the cursors
+	case rowsLeft < 0:
+
+	// *On A, direction A->E (going forward), return only next cursor
+	case cursors.Prev == "" && cursors.Next == "":
+		nextCursor = res[len(res)-1].CreatedAt.UTC().Format(time.RFC3339)
+
+	// *On E, direction A->E (going forward), return only prev cursor
+	case cursors.Next != "" && rowsLeft == len(res):
+		prevCursor = res[0].CreatedAt.UTC().Format(time.RFC3339)
+
+	// *On A, direction E->A (going backwards), return only next cursor
+	case cursors.Prev != "" && rowsLeft == len(res):
+		nextCursor = res[len(res)-1].CreatedAt.UTC().Format(time.RFC3339)
+
+	// *On E, direction E->A (going backwards), return only prev cursor
+	case cursors.Prev != "" && total == rowsLeft:
+		prevCursor = res[0].CreatedAt.UTC().Format(time.RFC3339)
+
+	// *Somewhere in the middle
+	default:
+		nextCursor = res[len(res)-1].CreatedAt.UTC().Format(time.RFC3339)
+		prevCursor = res[0].CreatedAt.UTC().Format(time.RFC3339)
+
+	}
+
+	return res, Cursors{Prev: prevCursor, Next: nextCursor}, nil
+}
+
+/*
+TODO test it manually with a big data set
+TODO [x] figure out the last order by statement
+TODO understand how it works
+TODO write down every scenario
+	* When there is prev cursor (when we are going backwards)
+	* When there is next cursor (when we are going forward)
+	* The case when no cursor is provided
+	* Understand why do we need to reverse the order when coming back
+
+TODO try to draw a diagram explaining the scenarios
+
+TODO explain the code in parts, do not paste it as on piece. Divide it
+*/
