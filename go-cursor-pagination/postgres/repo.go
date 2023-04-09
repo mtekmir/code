@@ -37,22 +37,23 @@ func (store Store) GetProducts(
 	rowsLeftQuery := "SELECT COUNT(*) FROM products p"
 	pagination := ""
 
+	// Going forward
 	if cursors.Next != "" {
-		f := fmt.Sprintf("p.created_at < $%d", len(values)+1)
-		rowsLeftQuery += fmt.Sprintf(" WHERE %s", f)
-		pagination += fmt.Sprintf("WHERE %s ORDER BY created_at DESC LIMIT $%d", f, len(values)+2)
+		rowsLeftQuery += " WHERE p.created_at < $1"
+		pagination += "WHERE p.created_at < $1 ORDER BY created_at DESC LIMIT $2"
 		values = append(values, cursors.Next, limit)
 	}
 
+	// Going backward
 	if cursors.Prev != "" {
-		f := fmt.Sprintf("p.created_at > $%d", len(values)+1)
-		rowsLeftQuery += fmt.Sprintf(" WHERE %s", f)
-		pagination += fmt.Sprintf("WHERE %s ORDER BY created_at ASC LIMIT $%d", f, len(values)+2)
+		rowsLeftQuery += " WHERE p.created_at > $1"
+		pagination += "WHERE p.created_at > $1 ORDER BY created_at ASC LIMIT $2"
 		values = append(values, cursors.Prev, limit)
 	}
 
+	// No cursors: Going forward from the beginning
 	if cursors.Next == "" && cursors.Prev == "" {
-		pagination = fmt.Sprintf(" ORDER BY p.created_at DESC LIMIT $%d", len(values)+1)
+		pagination = " ORDER BY p.created_at DESC LIMIT $1"
 		values = append(values, limit)
 	}
 
@@ -65,7 +66,7 @@ func (store Store) GetProducts(
 		(SELECT COUNT(*) FROM products) AS total
 		FROM p
 		ORDER BY created_at DESC
-	`, pagination, rowsLeftQuery)
+  `, pagination, rowsLeftQuery)
 
 	rows, err := store.db.Query(stmt, values...)
 	if err != nil {
@@ -91,7 +92,7 @@ func (store Store) GetProducts(
 	}
 
 	var (
-		prevCursor string // cursor we return when there is a prev page
+		prevCursor string // cursor we return when there is a previous page
 		nextCursor string // cursor we return when there is a next page
 	)
 
@@ -114,11 +115,11 @@ func (store Store) GetProducts(
 	case cursors.Next != "" && rowsLeft == len(pp):
 		prevCursor = pp[0].CreatedAt.UTC().Format(time.RFC3339)
 
-	// *On A, direction E->A (going backwards), return only next cursor
+	// *On A, direction E->A (going backward), return only next cursor
 	case cursors.Prev != "" && rowsLeft == len(pp):
 		nextCursor = pp[len(pp)-1].CreatedAt.UTC().Format(time.RFC3339)
 
-	// *On E, direction E->A (going backwards), return only prev cursor
+	// *On E, direction E->A (going backward), return only prev cursor
 	case cursors.Prev != "" && total == rowsLeft:
 		prevCursor = pp[0].CreatedAt.UTC().Format(time.RFC3339)
 

@@ -16,7 +16,7 @@ import (
 func SetupDB(t *testing.T) *sql.DB {
 	t.Helper()
 
-	dbURL := "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable"
+	dbURL := "postgres://postgres:postgres@localhost:5433/postgres?sslmode=disable"
 	u := os.Getenv("DATABASE_URL")
 	if u != "" {
 		dbURL = u
