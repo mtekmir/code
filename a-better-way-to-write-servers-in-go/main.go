@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github/mtekmir/a-server/config"
 	"github/mtekmir/a-server/server"
 	"log"
 )
@@ -12,6 +13,10 @@ func main() {
 }
 
 func run() error {
-	s := server.New()
+	conf, err := config.Parse()
+	if err != nil {
+		return err
+	}
+	s := server.New(conf)
 	return s.Start()
 }
